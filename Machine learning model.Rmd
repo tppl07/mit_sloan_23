@@ -1,0 +1,275 @@
+---
+title: "Injuries for MIT SLOAN"
+date: "11/23/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+library(ggplot2)
+# library(jpeg)
+# library(patchwork)
+```
+
+# Functions
+```{r functions}
+is.na.sum <- function(x)
+  return(sum(is.na(x)) == 0)
+```
+
+# Data load & prepare
+```{r load_data_prepare, message=FALSE, warning=FALSE}
+setwd("~/data")
+df <- read.table('dane_treningowe.csv', 
+                 sep = ';', 
+                 dec = ',',
+                 header = TRUE, 
+                 na.strings = 'NULL')
+df.test <- read.table('dane_testowe.csv', 
+                      sep = ';', 
+                      dec = ',',
+                      header = TRUE, 
+                      na.strings = 'NULL')
+
+df %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) %>% 
+  na.omit() -> df.final
+df.test %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) %>% 
+  na.omit() -> df.test.final
+```
+
+# Classification
+```{r class, message=FALSE, warning=FALSE}
+ctrl.smote <- trainControl(method = 'cv', 
+                           number = 10,
+                           repeats = 5,
+                           sampling = 'smote')
+tune.grid <- expand.grid(nrounds = 500,
+                         max_depth = 7,
+                         eta = 0.05,
+                         gamma = 0.01,
+                         colsample_bytree = 0.75,
+                         min_child_weight = 0,
+                         subsample = 0.5)
+model.xgboost <- train(Injury ~ .,
+                       data = df.final,
+                       method = 'xgbTree',
+                       trControl = ctrl.smote,
+                       tuneGrid = tune.grid)
+```
+
+# Results on train set
+```{r resuls}
+confusionMatrix(data = predict(model.xgboost, df.final), 
+                reference = df.final$Injury, 
+                mode = 'prec_recall')
+```
+# Results on test set
+
+```{r resuls}
+confusionMatrix(data = predict(model.xgboost, df.test.final),
+                reference = df.test.final$Injury,
+                mode = 'prec_recall')
+```
+
+```{r import}
+plot(varImp(model.xgboost), top = 20)
+```
+
+# Approach with imputation
+
+```{r numeric approach}
+df %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.final
+df.test %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.test.final
+predict(preProcess(df.final, method = 'medianImpute'), df.final) -> df.prep
+
+model.xgboost.imp <- train(Injury ~ .,
+                           data = df.prep,
+                           method = 'xgbTree',
+                           trControl = ctrl.smote,
+                           tuneGrid = tune.grid)
+
+confusionMatrix(data = predict(model.xgboost.imp, df.prep), 
+                reference = df.prep$Injury, 
+                mode = 'prec_recall')
+
+predict(preProcess(df.test.final, method = 'medianImpute'), df.test.final) -> df.test.prep
+
+confusionMatrix(data = predict(model.xgboost.imp, df.test.prep), 
+                reference = df.test.prep$Injury, 
+                mode = 'prec_recall')
+
+
+plot(varImp(model.xgboost.imp), top = 20)
+
+# img <- readJPEG('~/img/KKS-Lech-Poznan_herb2022.png', native = TRUE)
+
+varImp(model.xgboost.imp)$importance %>% 
+  as_tibble(rownames = 'Feature') %>% 
+  setNames(c('Feature', 'Importance')) %>% 
+  mutate(Feature = reorder(Feature, Importance),
+         Rule = ifelse(grepl('REG', Feature), 'TRUE', 'FALSE')) %>% 
+  top_n(20, wt = Importance) %>% 
+  ggplot(aes(x = Feature, y = Importance, fill = Rule)) + 
+  geom_col() + 
+  scale_fill_manual(values=c('#014993',
+                             '#FF7800')) + 
+  theme_minimal() + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  coord_flip() + 
+  ylab('Importance (in %)') + 
+  theme(legend.position = c(0.8, 0.2))
+# + 
+#   inset_element(p = img,
+#                 left = 0.6,
+#                 bottom = 0.6,
+#                 right = 0.9,
+#                 top = 0.2,
+#                 align_to = 'full')
+```
+
+# Approach with only non-missing data
+
+```{r numeric approach}
+df %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  select(is.na.sum) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.final
+
+df.test %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  select(names(df.final)) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.test.final
+
+model.xgboost.non.missing <- train(Injury ~ .,
+                                   data = df.final,
+                                   method = 'xgbTree',
+                                   trControl = ctrl.smote,
+                                   tuneGrid = tune.grid)
+
+confusionMatrix(data = predict(model.xgboost.non.missing, df.final), 
+                reference = df.final$Injury, 
+                mode = 'prec_recall')
+
+confusionMatrix(data = predict(model.xgboost.non.missing, df.test.final), 
+                reference = df.test.final$Injury, 
+                mode = 'prec_recall')
+
+plot(varImp(model.xgboost.non.missing), top = 20)
+```
+# Approach with no REG
+
+```{r numeric approach}
+df %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT'), 
+         -contains('REG')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.final
+df.test %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT'), 
+         -contains('REG')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.test.final
+predict(preProcess(df.final, method = 'medianImpute'), df.final) -> df.prep
+
+model.xgboost.imp <- train(Injury ~ .,
+                           data = df.prep,
+                           method = 'xgbTree',
+                           trControl = ctrl.smote,
+                           tuneGrid = tune.grid)
+
+confusionMatrix(data = predict(model.xgboost.imp, df.prep), 
+                reference = df.prep$Injury, 
+                mode = 'prec_recall')
+
+predict(preProcess(df.test.final, method = 'medianImpute'), df.test.final) -> df.test.prep
+
+confusionMatrix(data = predict(model.xgboost.imp, df.test.prep), 
+                reference = df.test.prep$Injury, 
+                mode = 'prec_recall')
+
+
+plot(varImp(model.xgboost.imp), top = 20)
+```
+
+# Approach with only REG
+
+```{r numeric approach}
+df %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.final
+df.test %>% 
+  select(-PlayerName, -Runda) %>% 
+  select(-contains('RESULT')) %>% 
+  mutate(Injury = ifelse(Injury == 2, 1, Injury), 
+         Injury = factor(Injury)) -> df.test.final
+predict(preProcess(df.final, method = 'medianImpute'), df.final) -> df.prep
+
+df.prep %>% 
+  select(contains('REG'), Injury) -> df.prep
+
+model.xgboost.imp <- train(Injury ~ .,
+                           data = df.prep,
+                           method = 'xgbTree',
+                           trControl = ctrl.smote,
+                           tuneGrid = tune.grid)
+
+confusionMatrix(data = predict(model.xgboost.imp, df.prep), 
+                reference = df.prep$Injury, 
+                mode = 'prec_recall')
+
+predict(preProcess(df.test.final, method = 'medianImpute'), df.test.final) -> df.test.prep
+
+confusionMatrix(data = predict(model.xgboost.imp, df.test.prep), 
+                reference = df.test.prep$Injury, 
+                mode = 'prec_recall')
+
+
+plot(varImp(model.xgboost.imp))
+
+varImp(model.xgboost.imp)$importance %>% 
+  as_tibble(rownames = 'Feature') %>% 
+  setNames(c('Feature', 'Importance')) %>% 
+  mutate(Feature = reorder(Feature, Importance),
+         Rule = ifelse(grepl('REG', Feature), 'TRUE', 'FALSE')) %>% 
+  top_n(20, wt = Importance) %>% 
+  ggplot(aes(x = Feature, y = Importance)) + 
+  geom_col(fill = '#014993') + 
+  theme_minimal() + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  coord_flip() + 
+  ylab('Importance (in %)') + 
+  theme(legend.position = c(0.8, 0.2))
+```
+
